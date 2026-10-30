@@ -52,7 +52,7 @@ Both autoscalers also **scaled back down to 2** when the traffic stopped.
 
 | | |
 |---|---|
-| ![Live dashboard during a 50-order rush](docs/images/dashboard-rush.png) **Live dashboard** during a 50-order rush: orders flow through the pipeline, pod dots appear as servers scale, and the queue gauge fills and drains | ![Pods scaling during both load tests](docs/images/grafana-replicas.png) **Autoscaling** during both tests: workers 2 → 5 (KEDA), API 2 → 4 (HPA), then back to 2 |
+| ![Live dashboard during a 50-order rush](docs/images/dashboard-rush.png) **Live dashboard** during a 50-order rush: orders flow through the pipeline, pod dots appear as servers scale, and the queue gauge fills and drains | ![Pods scaling during both load tests](docs/images/grafana-replicas.png) **Autoscaling** during both tests: workers (purple) 2 → 5 with KEDA, API (orange) 2 → 4 with the HPA, then both back to 2 |
 | ![Argo CD with every app healthy and synced](docs/images/argocd-apps.png) **GitOps:** every component deployed by Argo CD from Git, pinned to exact versions, all Healthy and Synced | ![Orders per worker computed from logs in Loki](docs/images/loki-orders-per-worker.png) **Logs:** orders per worker computed purely from log lines in Loki; the two pod families show the rollout itself |
 
 ---

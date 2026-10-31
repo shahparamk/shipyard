@@ -157,6 +157,8 @@ flowchart LR
 - **HPA** scales the API on CPU; **KEDA** scales workers on **SQS queue depth** (the right signal for queue consumers, whose CPU stays low even with thousands of messages waiting)
 - Worker batch size and in-pod concurrency are configurable, tuned with load-test data (see [Results](#results-load-testing-found-the-real-bottleneck))
 - Argo CD **self-heals**: manual changes in the cluster are reverted to match Git within seconds
+- **A fresh cluster comes up fully healthy with zero manual steps:** after bootstrapping Argo CD, all 10 apps (including cert-manager, monitoring, logging, and autoscalers) sync and become healthy on their own in about 6 minutes
+- **ALB readiness gates:** during a rollout, the load balancer itself must see a new pod as healthy before Kubernetes counts it as ready
 
 **Security**
 - **No long-lived credentials:** GitHub OIDC for CI, IAM Identity Center (SSO) for operators, EKS Pod Identity for workloads
@@ -166,6 +168,7 @@ flowchart LR
 - Hardened containers: non-root, read-only filesystem, all capabilities dropped, no package managers in runtime images
 - Per-client **rate limiting** on the public order endpoint, keyed on the client IP the load balancer appends (so it can't be spoofed), with in-cluster traffic exempt
 - **Branch protection** on all four repos: changes go through pull requests, and the required checks must pass
+- **Webhook certificates issued by cert-manager** (load balancer controller and Prometheus operator), so they're created once and never drift between deploys
 
 **Public HTTPS entry point**
 - Custom domain on Route 53 with a DNS-validated ACM certificate (auto-renews)
@@ -176,6 +179,7 @@ flowchart LR
 - **Prometheus** scrapes the API and workers' own metrics; **Grafana** dashboards ship as code with the app's Helm chart
 - **SLO-based alerts:** 99% of requests succeed, and 95% complete in under 500 ms, plus queue-backlog, worker-failure, crash-loop, and degraded-deployment alerts
 - **Loki + Grafana Alloy** for centralized, searchable logs (structured JSON, low-cardinality labels; `orderId` stays in the log line)
+- **End-to-end order traces from logs:** one query for an order ID shows the API pod that accepted it, the worker pod that processed it, and the time in between
 
 **Live dashboard**
 - React, served by unprivileged nginx with strict security headers
@@ -202,18 +206,25 @@ flowchart LR
 - **Why three repos?** Infra, code, and deployment state change at different rates and for different reasons; separating them gives each its own review flow and history.
 - **Why SHA tags, never `latest`?** Every running image traces back to an exact commit, and rollback means deploying the previous SHA.
 - **Why write-only secrets?** The RDS-managed password created a new secret name on every recreate, which broke GitOps. Ephemeral values plus write-only arguments give a stable name without storing the password in state.
-- **Why webhook certificates needed care under GitOps.** Charts that generate self-signed webhook certificates at render time drift under Argo CD, which renders repeatedly. A mismatched certificate on one controller's webhook even blocked an unrelated component from being created. The fix is issuing those certificates with cert-manager instead.
+- **Why webhook certificates needed care under GitOps.** Charts that generate self-signed webhook certificates at render time drift under Argo CD, which renders repeatedly. A mismatched certificate on one controller's webhook even blocked an unrelated component from being created. Issuing them with cert-manager fixed it: the charts now request a certificate, cert-manager issues it once, and its CA injector owns the one field Argo CD is told to ignore. The next fresh cluster came up healthy with no manual steps.
+- **Why validate the GitOps repo in CI?** It decides what runs in the cluster, so every change is linted, rendered with real values, and checked for pinned versions before it can merge. On its first run, the check caught a broken file that had already been merged.
 - **Why tear down the apps before the cluster?** The load balancer and DNS record are created by controllers inside the cluster, not by Terraform. Destroying the cluster first would orphan a billing load balancer.
 
 ---
 
-## In progress
+## Known limitations and next steps
 
-- [ ] cert-manager for webhook certificates (merged; verifying on a fresh cluster)
-- [ ] Small fixes from the load test: finer worker latency buckets, an "order accepted" log line for full request traces in Loki, dashboard wording
-- [ ] **Karpenter:** nodes that scale with demand (today the dev cluster runs a fixed node count)
-- [ ] **Failure drills with written postmortems:** bad deploy and rollback, out-of-memory kill, poison message to the dead-letter queue, wrong database secret, node loss, and the database/queue dual-write gap
-- [ ] **Hardening:** narrower CI deploy role, ALB readiness gates, GitHub Actions pinned to commit SHAs, VPC CNI prefix delegation, per-service database users
+Being honest about what a platform doesn't do yet is part of running it. These are the gaps I know about, and what I'd do next:
+
+- **Node autoscaling.** Pods scale automatically (HPA and KEDA), but the dev cluster runs a fixed number of nodes. Next: Karpenter, which also removes the per-node pod limit I currently work around with an extra node.
+- **Deploy ordering.** On a brand-new cluster, the app's first pods can start before the load balancer controller's webhook is ready, so they miss their readiness gates until the next rollout. Next: Argo CD sync waves with application health checks.
+- **The CI apply role is broad.** Terraform applies run with an administrator role (gated behind manual approval). Next: a least-privilege policy generated from actual usage with IAM Access Analyzer.
+- **Bootstrap isn't fully GitOps yet.** Argo CD and External Secrets are installed with two Helm commands before Argo takes over everything else.
+- **Shared database user.** The API and worker use the same database credentials. Next: one user per service, or IAM database authentication.
+- **Supply-chain pinning.** GitHub Actions are pinned to major versions rather than commit SHAs, and the web image's base is a moving tag patched at build time. Next: SHA-pinned actions and a digest-pinned base image updated by Renovate.
+- **Rate limiting is per pod.** With N API pods, a client can get up to N times the limit. Next: a shared limit (Redis) or AWS WAF rate rules at the load balancer.
+- **The database/queue dual write.** If saving an order succeeds but publishing it to the queue fails, the order stays pending. Next: the transactional outbox pattern.
+- **Failure drills.** Rollback, out-of-memory kills, poison messages, and node loss are designed for but not yet exercised as written drills.
 
 ---
 
